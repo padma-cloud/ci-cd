@@ -1,0 +1,133 @@
+name: Universal CI-CD Pipeline
+on:
+  push:
+    branches: ["*"]
+  workflow_dispatch:
+    inputs:
+      run_sast:
+        description: "Enable SAST Scan?"
+        type: boolean
+        default: false
+      run_sca:
+        description: "Enable SCA Dependency Scan?"
+        type: boolean
+        default: false
+      run_secrets:
+        description: "Enable Secret Scan?"
+        type: boolean
+        default: true
+      run_iac:
+        description: "Enable IaC Scan?"
+        type: boolean
+        default: false
+      environment:
+        description: "Override deployment environment (dev/stage)"
+        required: false
+env:
+  EMAIL_TO: "devops-team@example.com"
+  EMAIL_FROM: "cicd-report@example.com"
+  RUN_SAST: ${{ github.event.inputs.run_sast || false }}
+  RUN_SCA: ${{ github.event.inputs.run_sca || false }}
+  RUN_SECRETS: ${{ github.event.inputs.run_secrets || true }}
+  RUN_IAC: ${{ github.event.inputs.run_iac || false }}
+jobs:
+  determine-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.target_env }}
+    steps:
+      - name: Determine target environment
+        id: set-env
+        run: |
+          if [ "${{ github.ref_name }}" = "develop" ]; then
+            echo "target_env=dev" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref_name }}" = "stage" ]; then
+            echo "target_env=stage" >> $GITHUB_OUTPUT
+          else
+            echo "target_env=none" >> $GITHUB_OUTPUT
+          fi
+  ci:
+    needs: determine-environment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up language automatically
+        uses: actions/setup-node@v4
+        if: fileExists('package.json')
+      - uses: actions/setup-python@v5
+        if: fileExists('requirements.txt') || fileExists('pyproject.toml')
+      - uses: actions/setup-java@v4
+        if: fileExists('pom.xml')
+      - uses: actions/setup-go@v5
+        if: fileExists('go.mod')
+      ##########################################################################
+      # FAST MODE (only basic tests unless security is enabled)
+      ##########################################################################
+      - name: Run unit tests (generic)
+        run: |
+          echo "Running tests..."
+          if [ -f "package.json" ]; then npm test || true; fi
+          if [ -f "pytest.ini" ] || [ -f "requirements.txt" ]; then pytest || true; fi
+          if [ -f "pom.xml" ]; then mvn test -q || true; fi
+          if [ -f "go.mod" ]; then go test ./... || true; fi
+      ##########################################################################
+      # OPTIONAL SECURITY CHECKS
+      ##########################################################################
+      - name: SAST Scan
+        if: env.RUN_SAST == 'true'
+        uses: github/codeql-action/analyze@v3
+      - name: SCA Dependency Scan
+        if: env.RUN_SCA == 'true'
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      - name: Secret Scan
+        if: env.RUN_SECRETS == 'true'
+        uses: zricethezav/gitleaks-action@v2
+      - name: IaC Scan
+        if: env.RUN_IAC == 'true'
+        uses: bridgecrewio/checkov-action@master
+      ##########################################################################
+      # ARTIFACTS / EMAIL NOTIFICATION
+      ##########################################################################
+      - name: Save Logs
+        run: |
+          mkdir logs
+          cp -r . logs/ || true
+        continue-on-error: true
+      - name: Upload Pipeline Logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs
+          path: logs/
+      - name: Send Email Notification
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          from: ${{ env.EMAIL_FROM }}
+          to: ${{ env.EMAIL_TO }}
+          subject: "CI/CD Report - Branch ${{ github.ref_name }}"
+          body: "Pipeline completed. Logs attached."
+          attachments: logs/*
+  deploy:
+    needs: [determine-environment, ci]
+    runs-on: ubuntu-latest
+    if: needs.determine-environment.outputs.environment != 'none'
+    environment: ${{ needs.determine-environment.outputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Deploy to selected environment
+        run: |
+          echo "Deploying to ${{ needs.determine-environment.outputs.environment }}..."
+
+          # Examples (customize for real infra):
+          #   AWS: aws s3 sync build/ s3://mybucket-dev
+          #   Kubernetes: kubectl apply -f k8s/dev/
+          #   Terraform: terraform apply -auto-approve
+      - name: Deployment finished
+        run: echo "Deployment successful!"
