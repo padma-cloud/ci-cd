@@ -54,13 +54,38 @@ jobs:
         uses: actions/checkout@v4
       - name: Set up language automatically
         uses: actions/setup-node@v4
-        if: fileExists('package.json')
-      - uses: actions/setup-python@v5
-        if: fileExists('requirements.txt') || fileExists('pyproject.toml')
-      - uses: actions/setup-java@v4
-        if: fileExists('pom.xml')
-      - uses: actions/setup-go@v5
-        if: fileExists('go.mod')
+        name: Multi-Env Pipeline
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest # << REQUIRED
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect project type
+        id: detect
+        run: |
+          echo "node=$( [ -f package.json ] && echo true || echo false )" >> $GITHUB_OUTPUT
+          echo "python=$( [ -f requirements.txt ] || [ -f pyproject.toml ] && echo true || echo false )" >> $GITHUB_OUTPUT
+          echo "java=$( [ -f pom.xml ] && echo true || echo false )" >> $GITHUB_OUTPUT
+          echo "go=$( [ -f go.mod ] && echo true || echo false )" >> $GITHUB_OUTPUT
+      # NodeJS
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        if: steps.detect.outputs.node == 'true'
+      # Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        if: steps.detect.outputs.python == 'true'
+      # Java
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        if: steps.detect.outputs.java == 'true'
+      # Go
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        if: steps.detect.outputs.go == 'true'
       ##########################################################################
       # FAST MODE (only basic tests unless security is enabled)
       ##########################################################################
